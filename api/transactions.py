@@ -2,7 +2,7 @@
 api/transactions.py — Transaction query and submission endpoints.
 """
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import desc, func, select
 from pydantic import BaseModel
@@ -29,44 +29,34 @@ class SendTxRequest(BaseModel):
 
 @router.get("/txs")
 async def list_transactions(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return recent persisted transactions without exposing signatures."""
-    if limit < 1 or limit > 100:
-        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
-    if offset < 0:
-        raise HTTPException(status_code=422, detail="offset must be non-negative")
-
-    total_result = await db.execute(select(func.count()).select_from(ChainTransaction))
-    total = int(total_result.scalar_one() or 0)
     result = await db.execute(
         select(ChainTransaction)
-        .order_by(desc(ChainTransaction.timestamp), desc(ChainTransaction.tx_hash))
+        .order_by(desc(ChainTransaction.timestamp))
         .offset(offset)
         .limit(limit)
     )
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "transactions": [
-            {
-                "tx_hash": row.tx_hash,
-                "block_height": row.block_height,
-                "from_address": row.from_address,
-                "to_address": row.to_address,
-                "amount": str(row.amount),
-                "gas_fee": str(row.gas_fee),
-                "tx_type": row.tx_type,
-                "data": row.data,
-                "timestamp": row.timestamp,
-                "status": row.status,
-            }
-            for row in result.scalars().all()
-        ],
-    }
+    total = await db.scalar(select(func.count(ChainTransaction.tx_hash))) or 0
+    transactions = [
+        {
+            "tx_hash": tx.tx_hash,
+            "block_height": tx.block_height,
+            "from_address": tx.from_address,
+            "to_address": tx.to_address,
+            "amount": str(tx.amount),
+            "nonce": tx.nonce,
+            "gas_fee": str(tx.gas_fee),
+            "tx_type": tx.tx_type,
+            "data": tx.data,
+            "timestamp": tx.timestamp,
+            "status": tx.status,
+        }
+        for tx in result.scalars().all()
+    ]
+    return {"transactions": transactions, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/txs/{tx_hash}")

@@ -4,13 +4,13 @@ api/status.py — GET /status — full chain node status.
 import time
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import desc, func, select
+from sqlalchemy import func, select
 from chain.database import get_db
 from chain.config import settings
 from chain.core.chain import VITChain
 from chain.consensus.registry import ValidatorRegistry
 from chain.p2p.gossip import peer_count
-from chain.models import ChainBlock, ChainTransaction, Validator
+from chain.models import ChainTransaction
 
 router = APIRouter(prefix="/api", tags=["Status"])
 _chain = VITChain()
@@ -39,29 +39,17 @@ async def status(db: AsyncSession = Depends(get_db)):
 
 @router.get("/metrics")
 async def metrics(db: AsyncSession = Depends(get_db)):
-    """Return explorer metrics derived from persisted chain data."""
-    height = await _chain.get_height(db)
-    total_result = await db.execute(select(func.count()).select_from(ChainTransaction))
-    recent_result = await db.execute(
-        select(func.count()).select_from(ChainTransaction).where(
-            ChainTransaction.timestamp >= int(time.time()) - 60
+    now = int(time.time())
+    total_transactions = await db.scalar(select(func.count(ChainTransaction.tx_hash))) or 0
+    recent_transactions = await db.scalar(
+        select(func.count(ChainTransaction.tx_hash)).where(
+            ChainTransaction.timestamp >= now - 60
         )
-    )
-    validators_result = await db.execute(
-        select(func.count()).select_from(Validator).where(Validator.status == "active")
-    )
-    timestamps_result = await db.execute(
-        select(ChainBlock.timestamp).order_by(desc(ChainBlock.height)).limit(2)
-    )
-    timestamps = list(timestamps_result.scalars().all())
-    avg_block_time = (
-        max(0, timestamps[0] - timestamps[1]) if len(timestamps) == 2 else None
-    )
-
+    ) or 0
+    validators = await _reg.get_active_validators(db)
     return {
-        "height": height,
-        "tps": round(int(recent_result.scalar_one() or 0) / 60, 4),
-        "total_transactions": int(total_result.scalar_one() or 0),
-        "active_validators": int(validators_result.scalar_one() or 0),
-        "avg_block_time": avg_block_time,
+        "height": await _chain.get_height(db),
+        "tps": recent_transactions / 60,
+        "total_transactions": total_transactions,
+        "active_validators": len(validators),
     }
